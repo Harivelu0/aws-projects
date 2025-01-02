@@ -1,20 +1,19 @@
 #!/bin/bash
 set -e
 
-# Install Docker if not installed
+# Check if Docker is installed and running
 if ! command -v docker &> /dev/null; then
-    apt-get update
-    apt-get install -y apt-transport-https ca-certificates curl software-properties-common
-    curl -fsSL https://get.docker.com -o get-docker.sh
-    sh get-docker.sh
+    echo "Docker is not installed. Installing Docker..."
+    sudo apt-get update
+    sudo apt-get install -y docker.io
+    sudo systemctl start docker
+    sudo systemctl enable docker
 fi
 
-# Start Docker service if not running
-systemctl start docker
-systemctl enable docker
+echo "Pulling Docker image..."
+/usr/bin/docker pull harivp1234/simple-python-flask-app
 
-# Pull the Docker image from Docker Hub
-docker pull harivp1234/simple-python-flask-app
+echo "Running Docker container..."
+/usr/bin/docker run -d -p 5000:5000 harivp1234/simple-python-flask-app
 
-# Run the Docker image as a container
-docker run -d -p 5000:5000 harivp1234/simple-python-flask-app
+echo "Container started successfully"
