@@ -1,0 +1,58 @@
+name: Terraform infra pipeline
+
+on:
+  push:
+    paths:
+       - 'terraform/**'
+  workflow_dispatch:
+
+jobs:
+  terraform:
+    name:  Provision aws infrastructure
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform
+
+    steps:
+      - name: checkout directory
+        uses: actions/checkout@v3
+      - name: setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with: 
+          terraform_version:1.7.5
+
+      - name: AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key: ${{ secrets.AWS_ACCESS_KEY }}
+          aws-secret-key: ${{ secrets.AWS_SECRET_KEY }}
+          aws-region: us-east-1
+
+      - name: Terraform init
+        run: terraform init -input=false
+      - name: Terraform format
+        run: terraform fmt -check
+      - name: Terraform Validate
+        run: terraform validate
+      - name: Terraform plan
+        run: terraform plan -out=tfplan  
+      - name: Terraform apply
+        if: github.ref=='refs/heads/main'
+        run: terraform apply -auto-approve
+      - name: Export outputs
+        id: tfoutputs
+        run: |
+          terraform output -json > tfoutputs.json
+          cat tfoutputs.json
+      
+      - name: update github secrets with outputs
+        if: github.ref=='refs/heads/main'
+        run: |
+          for key in $(jq -r 'keys[]' tf_outputs.json); do
+            value=$(jq -r ".\"$key\".value" tf_outputs.json)
+            echo "Setting secret: $key"
+            gh secret set $key --body "$value"
+          done
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
