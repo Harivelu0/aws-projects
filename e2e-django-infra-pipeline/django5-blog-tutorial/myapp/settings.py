@@ -9,7 +9,7 @@ https://docs.djangoproject.com/en/5.0/topics/settings/
 For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.0/ref/settings/
 """
-
+import os
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -90,16 +90,21 @@ WSGI_APPLICATION = 'myapp.wsgi.application'
 #     }
 # }
 
+db_host_raw = os.environ.get('DB_HOST', '')
+if ':' in db_host_raw:
+    db_host = db_host_raw.split(':')[0]  # Get just the hostname part
+else:
+    db_host = db_host_raw
+    
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
-        'NAME': 'blog_db',
-        'USER': 'root',
-        'PASSWORD': 'newpassword',
-        'HOST': 'localhost',
-        'PORT': '3306'
+        'NAME': os.environ.get('DB_NAME'),
+        'USER': os.environ.get('DB_USER'),
+        'PASSWORD': os.environ.get('DB_PASSWORD'),
+        'HOST': os.environ.get('DB_HOST'),
+        'PORT': os.environ.get('DB_PORT'), 
     }
-
 }
 
 

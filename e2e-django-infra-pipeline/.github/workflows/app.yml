@@ -1,0 +1,179 @@
+name: Deploy App
+
+on:
+  workflow_run:
+    workflows: ["Terraform Infra Pipeline"]
+    types:
+      - completed
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1️⃣ Checkout code
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 2️⃣ Configure AWS credentials
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+      
+      # 3️⃣ Setup Terraform
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: latest
+
+      # 4️⃣ Initialize Terraform
+      - name: Terraform Init (remote backend)
+        working-directory: terraform
+        run: terraform init -input=false
+
+      # 5️⃣ Fetch secret name from Parameter Store directly
+      - name: Fetch Secret Name from Parameter Store
+        run: |
+          echo "Fetching app_secret_name from Parameter Store..."
+          SECRET_NAME=$(aws ssm get-parameter \
+            --name "/django-blog/app_secret_name" \
+            --query "Parameter.Value" \
+            --output text)
+          
+          # Validate that we got a value
+          if [ -z "$SECRET_NAME" ]; then
+            echo "Error: Failed to retrieve secret name from Parameter Store"
+            exit 1
+          fi
+          
+          echo "Retrieved secret name: $SECRET_NAME"
+          echo "SECRET_NAME=$SECRET_NAME" >> $GITHUB_ENV
+        env:
+          AWS_DEFAULT_REGION: us-east-1
+          AWS_REGION: us-east-1
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      
+      # 6️⃣ Fetch app secrets from AWS Secrets Manager
+      - name: Fetch App Secrets
+        run: |
+          echo "Retrieving secrets using name: $SECRET_NAME"
+          SECRET_JSON=$(aws secretsmanager get-secret-value \
+            --secret-id "$SECRET_NAME" \
+            --query SecretString \
+            --output text)
+          
+          echo "Secret retrieved successfully. Parsing values..."
+          echo "$SECRET_JSON" > secret.json
+          for key in DB_NAME DB_USER DB_PASSWORD DB_HOST DB_PORT DJANGO_SECRET_KEY; do
+            value=$(jq -r ".${key}" secret.json)
+            echo "$key has been set"
+            echo "$key=$value" >> $GITHUB_ENV
+          done
+          
+          # Remove secret file after use
+          rm secret.json
+        env:
+          AWS_DEFAULT_REGION: us-east-1
+          AWS_REGION: us-east-1
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+         
+      # 7️⃣ Install Python dependencies
+      - name: Setup Python environment
+        working-directory: django5-blog-tutorial
+        run: |
+          python3 -m venv /home/runner/venv
+          source /home/runner/venv/bin/activate
+          
+          # Install MySQL client system dependencies
+          sudo apt-get update
+          sudo apt-get install -y python3-dev default-libmysqlclient-dev build-essential
+          
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # ADD THESE NEW STEPS HERE
+      
+      # 7.5️⃣ Fix DB_HOST and DB_PORT
+      - name: Fix DB connection parameters
+        run: |
+          echo "Original DB_HOST: $DB_HOST"
+          
+          # Extract hostname without port
+          if [[ "$DB_HOST" == *":"* ]]; then
+            HOSTNAME=$(echo "$DB_HOST" | cut -d':' -f1)
+            PORT=$(echo "$DB_HOST" | cut -d':' -f2)
+            
+            echo "Extracted hostname: $HOSTNAME"
+            echo "Extracted port: $PORT"
+            
+            # Set corrected environment variables
+            echo "DB_HOST=$HOSTNAME" >> $GITHUB_ENV
+            echo "DB_PORT=$PORT" >> $GITHUB_ENV
+            
+            echo "Updated DB_HOST and DB_PORT in environment"
+          fi
+          
+          # Print for verification
+          echo "Will use DB_HOST: $HOSTNAME"
+          echo "Will use DB_PORT: $DB_PORT"
+      
+      # 4️⃣ Build & push Docker image
+      - name: Build and Push Docker Image
+        run: |
+          echo "Authenticating with ECR..."
+          aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
+          
+          echo "Building and pushing Docker image..."
+          IMAGE_URI=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/myapp:latest
+          
+          # Add working directory to Docker build command
+          cd django5-blog-tutorial
+          docker build -t $IMAGE_URI .
+          docker push $IMAGE_URI
+      
+      # 🔟 Deploy to ECS
+      - name: Update task definition and deploy to ECS
+        run: |
+          echo "Preparing ECS deployment..."
+          
+          # Set variables
+          PROJECT_NAME="django-blog"
+          ECR_REPO="myapp"
+          IMAGE_URI="${AWS_ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com/${ECR_REPO}:latest"
+          TASK_FAMILY="${PROJECT_NAME}-task"
+          
+          echo "Using image: $IMAGE_URI"
+          
+          # Get the current task definition
+          echo "Retrieving current task definition..."
+          aws ecs describe-task-definition \
+            --task-definition $TASK_FAMILY \
+            --query taskDefinition > task-def.json
+          
+          # Update the image in the task definition
+          echo "Updating image in task definition..."
+          jq --arg IMAGE "$IMAGE_URI" '.containerDefinitions[0].image = $IMAGE' task-def.json > new-task-def.json
+          
+          # Register the new task definition
+          echo "Registering new task definition..."
+          NEW_TASK_DEF=$(aws ecs register-task-definition \
+            --cli-input-json file://new-task-def.json \
+            --query taskDefinition.taskDefinitionArn --output text)
+          
+          echo "New task definition created: $NEW_TASK_DEF"
+          
+          # Update the service with the new task definition
+          echo "Deploying to ECS..."
+          aws ecs update-service \
+            --cluster "${PROJECT_NAME}-cluster" \
+            --service "${PROJECT_NAME}-service" \
+            --task-definition $NEW_TASK_DEF \
+            --force-new-deployment
+          
+          echo "Deployment complete!"

@@ -2,10 +2,10 @@ terraform {
   required_version = ">= 1.3.0"
 
   backend "s3" {
-    bucket         = "my-terraform-backend-bucket"   # Replace with your S3 bucket
+    bucket         = "my-terraform-backend-bucketing-bucket" # Replace with 
     key            = "ecs-app/terraform.tfstate"
     region         = "us-east-1"
-    dynamodb_table = "terraform-locks"              # DynamoDB for state locking
+    dynamodb_table = "terraform-locks"
     encrypt        = true
   }
 

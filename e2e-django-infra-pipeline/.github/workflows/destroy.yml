@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: infra
+        working-directory: terraform
 
     steps:
       - name: Checkout repository
@@ -32,3 +32,6 @@ jobs:
 
       - name: Terraform Destroy
         run: terraform destroy -auto-approve
+        env:
+          TF_VAR_django_secret_key: ${{ secrets.DJANGO_SECRET_KEY }}
+          TF_VAR_admin_password: ${{ secrets.ADMIN_PASSWORD }}
